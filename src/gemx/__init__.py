@@ -7,18 +7,18 @@ from __future__ import annotations
 
 from .client import Gemx, GemxConfig
 from .errors import (
-    InputError,
     GemxError,
+    InputError,
     ResponseParseError,
     ResponseTimeoutError,
 )
 from .formats import OutputFormat, format_instruction, parse_output
 
 __all__ = [
-    "InputError",
     "Gemx",
     "GemxConfig",
     "GemxError",
+    "InputError",
     "OutputFormat",
     "ResponseParseError",
     "ResponseTimeoutError",
