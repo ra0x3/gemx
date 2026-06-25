@@ -7,15 +7,15 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from jimi.cli import _render, build_parser
-from jimi.formats import OutputFormat
+from gemx.cli import _render, build_parser
+from gemx.formats import OutputFormat
 
 
 def test_parser_defaults() -> None:
     args = build_parser().parse_args(["hello"])
     assert args.prompt == "hello"
     assert args.format is OutputFormat.JSON
-    assert args.profile_dir == Path("~/.jimi/profile")
+    assert args.profile_dir == Path("~/.gemx/profile")
     assert args.headful is False
 
 

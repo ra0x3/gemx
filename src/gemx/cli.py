@@ -1,4 +1,4 @@
-"""Command-line interface: ``jimi``."""
+"""Command-line interface: ``gemx``."""
 
 from __future__ import annotations
 
@@ -11,20 +11,20 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from . import __version__
-from .client import Jimi, JimiConfig
-from .errors import JimiError
+from .client import Gemx, GemxConfig
+from .errors import GemxError
 from .formats import OutputFormat
 
-DEFAULT_PROFILE_DIR = Path("~/.jimi/profile")
+DEFAULT_PROFILE_DIR = Path("~/.gemx/profile")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Construct the ``jimi`` argument parser."""
+    """Construct the ``gemx`` argument parser."""
     parser = argparse.ArgumentParser(
-        prog="jimi",
+        prog="gemx",
         description="Drive the Gemini web UI from the command line.",
     )
-    parser.add_argument("--version", action="version", version=f"jimi {__version__}")
+    parser.add_argument("--version", action="version", version=f"gemx {__version__}")
     parser.add_argument(
         "prompt",
         nargs="?",
@@ -83,15 +83,15 @@ async def _run(args: argparse.Namespace) -> int:
         print("error: empty prompt", file=sys.stderr)
         return 2
 
-    config = JimiConfig(
+    config = GemxConfig(
         profile_dir=args.profile_dir,
         headless=not args.headful,
         response_timeout_s=args.response_timeout,
     )
     try:
-        async with Jimi(config) as jimi:
-            result = await jimi.ask(prompt, args.format)
-    except JimiError as exc:
+        async with Gemx(config) as gemx:
+            result = await gemx.ask(prompt, args.format)
+    except GemxError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
@@ -100,7 +100,7 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point for the ``jimi`` console script."""
+    """Entry point for the ``gemx`` console script."""
     args = build_parser().parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,

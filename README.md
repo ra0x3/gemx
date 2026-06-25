@@ -1,13 +1,13 @@
-# Jimi
+# Gemx
 
-**Drive the Gemini web UI from Python.** A play on "Gemini" — Jimi treats
+**Drive the Gemini web UI from Python.** A play on "Gemini" — Gemx treats
 `gemini.google.com` as if it were an API, using Playwright to enter a prompt,
 submit it, and capture the structured reply.
 
 It exists because the obvious approaches don't work: Gemini's editor is
 [Quill](https://quilljs.com/), which keeps its own document model and ignores
 DOM surgery, Playwright `fill()`, and synthetic input events — those leave the
-model empty and the turn errors with *"I encountered an error."* Jimi injects
+model empty and the turn errors with *"I encountered an error."* Gemx injects
 text via `execCommand('insertText')` (the same trusted input pipeline a manual
 paste uses), reads the reply from `message-content .markdown`, and retains the
 *peak* streamed text because Gemini re-mounts the response node mid-stream.
@@ -15,7 +15,7 @@ paste uses), reads the reply from `message-content .markdown`, and retains the
 ## Install
 
 ```bash
-uv add jimi
+uv add gemx
 # Playwright needs a browser the first time:
 uv run playwright install chromium
 ```
@@ -24,25 +24,25 @@ uv run playwright install chromium
 
 ```bash
 # JSON (default)
-jimi "List 3 NBA teams as a JSON array"
+gemx "List 3 NBA teams as a JSON array"
 
 # XML
-jimi --format xml "Describe the solar system as XML"
+gemx --format xml "Describe the solar system as XML"
 
 # Plain text, reading the prompt from stdin
-echo "Summarize the plot of Dune in one sentence" | jimi --format txt
+echo "Summarize the plot of Dune in one sentence" | gemx --format txt
 
 # Watch the browser while it works
-jimi --headful --verbose "Hello there"
+gemx --headful --verbose "Hello there"
 ```
 
 The chosen `--format` (`json`, `xml`, or `txt`) is appended to the prompt as an
-instruction *and* drives how Jimi parses the reply.
+instruction *and* drives how Gemx parses the reply.
 
 | Option | Description |
 | --- | --- |
 | `-f, --format {json,xml,txt}` | Output format (default: `json`). |
-| `-p, --profile-dir PATH` | Chrome profile dir (default: `~/.jimi/profile`). |
+| `-p, --profile-dir PATH` | Chrome profile dir (default: `~/.gemx/profile`). |
 | `--headful` | Show the browser window. |
 | `--response-timeout SECONDS` | Wait for a response to start (default: 180). |
 | `-v, --verbose` | Log progress to stderr. |
@@ -52,13 +52,13 @@ instruction *and* drives how Jimi parses the reply.
 ```python
 import asyncio
 from pathlib import Path
-from jimi import Jimi, JimiConfig, OutputFormat
+from gemx import Gemx, GemxConfig, OutputFormat
 
 
 async def main() -> None:
-    config = JimiConfig(profile_dir=Path("~/.jimi/profile"))
-    async with Jimi(config) as jimi:
-        data = await jimi.ask("List 3 fruits as JSON", OutputFormat.JSON)
+    config = GemxConfig(profile_dir=Path("~/.gemx/profile"))
+    async with Gemx(config) as gemx:
+        data = await gemx.ask("List 3 fruits as JSON", OutputFormat.JSON)
         print(data)
 
 
@@ -67,7 +67,7 @@ asyncio.run(main())
 
 ## Authentication
 
-Jimi drives a real, signed-in Gemini session. Point `--profile-dir` at a Chrome
+Gemx drives a real, signed-in Gemini session. Point `--profile-dir` at a Chrome
 profile that is already logged into your Google account (run once with
 `--headful` to sign in); subsequent runs reuse that profile.
 
@@ -77,7 +77,7 @@ profile that is already logged into your Google account (run once with
 uv sync
 uv run ruff check .
 uv run mypy
-uv run pylint src/jimi
+uv run pylint src/gemx
 uv run pytest
 ```
 

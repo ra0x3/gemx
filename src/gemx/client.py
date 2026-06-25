@@ -26,7 +26,7 @@ from playwright.async_api import Page, async_playwright
 from .errors import InputError, ResponseTimeoutError
 from .formats import OutputFormat, format_instruction, parse_output
 
-logger = logging.getLogger("jimi")
+logger = logging.getLogger("gemx")
 
 GEMINI_URL = "https://gemini.google.com/app"
 INPUT_SELECTOR = '.ql-editor[contenteditable="true"]'
@@ -72,8 +72,8 @@ _DISMISS_WELCOME_JS = """() => {
 
 
 @dataclass(frozen=True, slots=True)
-class JimiConfig:  # pylint: disable=too-many-instance-attributes
-    """Tunables for a :class:`Jimi` session."""
+class GemxConfig:  # pylint: disable=too-many-instance-attributes
+    """Tunables for a :class:`Gemx` session."""
 
     profile_dir: Path
     headless: bool = True
@@ -98,16 +98,16 @@ class JimiConfig:  # pylint: disable=too-many-instance-attributes
     )
 
 
-class Jimi:
+class Gemx:
     """A Gemini web-UI session.
 
     Use as an async context manager so the browser is cleaned up::
 
-        async with Jimi(JimiConfig(profile_dir=Path("~/.jimi/profile"))) as jimi:
-            data = await jimi.ask("List 3 fruits", OutputFormat.JSON)
+        async with Gemx(GemxConfig(profile_dir=Path("~/.gemx/profile"))) as gemx:
+            data = await gemx.ask("List 3 fruits", OutputFormat.JSON)
     """
 
-    def __init__(self, config: JimiConfig) -> None:
+    def __init__(self, config: GemxConfig) -> None:
         self._config = config
 
     async def ask(
@@ -228,7 +228,7 @@ class Jimi:
             raise ResponseTimeoutError("Response node never produced text")
         return best
 
-    async def __aenter__(self) -> Jimi:
+    async def __aenter__(self) -> Gemx:
         return self
 
     async def __aexit__(self, *_exc: object) -> None:

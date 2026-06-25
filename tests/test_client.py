@@ -4,18 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from jimi.client import (
+from gemx.client import (
     INPUT_SELECTOR,
     RESPONSE_SELECTOR,
     SEND_SELECTOR,
-    Jimi,
-    JimiConfig,
+    Gemx,
+    GemxConfig,
 )
-from jimi.formats import OutputFormat, format_instruction
+from gemx.formats import OutputFormat, format_instruction
 
 
 def test_config_defaults() -> None:
-    cfg = JimiConfig(profile_dir=Path("/tmp/p"))
+    cfg = GemxConfig(profile_dir=Path("/tmp/p"))
     assert cfg.headless is True
     assert cfg.response_timeout_s == 180
     assert "--no-sandbox" in cfg.launch_args
@@ -31,16 +31,16 @@ def test_selectors_match_debugged_values() -> None:
 def test_ask_appends_format_instruction(monkeypatch) -> None:
     captured: dict[str, str] = {}
 
-    async def fake_ask_raw(self: Jimi, prompt: str) -> str:
+    async def fake_ask_raw(self: Gemx, prompt: str) -> str:
         captured["prompt"] = prompt
         return '{"ok": true}'
 
-    monkeypatch.setattr(Jimi, "ask_raw", fake_ask_raw)
+    monkeypatch.setattr(Gemx, "ask_raw", fake_ask_raw)
 
     import asyncio
 
-    jimi = Jimi(JimiConfig(profile_dir=Path("/tmp/p")))
-    result = asyncio.run(jimi.ask("base prompt", OutputFormat.JSON))
+    gemx = Gemx(GemxConfig(profile_dir=Path("/tmp/p")))
+    result = asyncio.run(gemx.ask("base prompt", OutputFormat.JSON))
 
     assert result == {"ok": True}
     assert "base prompt" in captured["prompt"]

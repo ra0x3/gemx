@@ -1,7 +1,7 @@
-"""Output formats Jimi can request from Gemini.
+"""Output formats Gemx can request from Gemini.
 
 The chosen format is injected into the prompt as an instruction and also drives
-how Jimi extracts the structured payload from Gemini's reply.
+how Gemx extracts the structured payload from Gemini's reply.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 
 
 class OutputFormat(StrEnum):
-    """Structured output formats Jimi understands."""
+    """Structured output formats Gemx understands."""
 
     JSON = "json"
     XML = "xml"

@@ -6,7 +6,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 
-from jimi.formats import (
+from gemx.formats import (
     OutputFormat,
     format_instruction,
     parse_output,

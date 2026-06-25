@@ -1,19 +1,19 @@
-"""Exceptions raised by Jimi."""
+"""Exceptions raised by Gemx."""
 
 from __future__ import annotations
 
 
-class JimiError(Exception):
-    """Base class for all Jimi errors."""
+class GemxError(Exception):
+    """Base class for all Gemx errors."""
 
 
-class InputError(JimiError):
+class InputError(GemxError):
     """The prompt could not be entered into Gemini's editor."""
 
 
-class ResponseTimeoutError(JimiError):
+class ResponseTimeoutError(GemxError):
     """Gemini did not produce a response within the configured window."""
 
 
-class ResponseParseError(JimiError):
+class ResponseParseError(GemxError):
     """Gemini responded, but the payload could not be parsed for the format."""

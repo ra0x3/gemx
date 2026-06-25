@@ -1,14 +1,14 @@
-"""Jimi — drive the Gemini web UI from Python.
+"""Gemx — drive the Gemini web UI from Python.
 
 A play on "Gemini". Treats ``gemini.google.com`` as if it were an API.
 """
 
 from __future__ import annotations
 
-from .client import Jimi, JimiConfig
+from .client import Gemx, GemxConfig
 from .errors import (
     InputError,
-    JimiError,
+    GemxError,
     ResponseParseError,
     ResponseTimeoutError,
 )
@@ -16,9 +16,9 @@ from .formats import OutputFormat, format_instruction, parse_output
 
 __all__ = [
     "InputError",
-    "Jimi",
-    "JimiConfig",
-    "JimiError",
+    "Gemx",
+    "GemxConfig",
+    "GemxError",
     "OutputFormat",
     "ResponseParseError",
     "ResponseTimeoutError",
