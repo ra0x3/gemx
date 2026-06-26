@@ -58,6 +58,17 @@ _LONGEST_RESPONSE_JS = """(args) => {
     return best;
 }"""
 
+_SCROLL_INPUT_JS = """(selector) => {
+    const el = document.querySelector(selector);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}"""
+
+_CLICK_SEND_JS = """(selector) => {
+    const btn = document.querySelector(selector);
+    if (btn) { btn.click(); return true; }
+    return false;
+}"""
+
 _DISMISS_WELCOME_JS = """() => {
     const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
     for (const btn of buttons) {
@@ -73,7 +84,11 @@ _DISMISS_WELCOME_JS = """() => {
 
 @dataclass(frozen=True, slots=True)
 class GemxConfig:  # pylint: disable=too-many-instance-attributes
-    """Tunables for a :class:`Gemx` session."""
+    """Tunables for a :class:`Gemx` session.
+
+    Defaults mirror the behavior of the original ``bot/gemini.py`` driver this
+    library was extracted from; every value is overridable.
+    """
 
     profile_dir: Path
     headless: bool = True
@@ -96,6 +111,19 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
             "--disable-setuid-sandbox",
         )
     )
+    # Extra HTTP headers passed to the persistent context (the original driver
+    # supplied a "clean headers" set). None means no extra headers.
+    extra_http_headers: tuple[tuple[str, str], ...] | None = None
+    # Settle waits (ms) that the original driver interleaved so Gemini's UI/Quill
+    # editor caught up before the next action.
+    post_load_settle_ms: int = 5_000
+    settle_after_input_ms: int = 1_000
+    settle_after_submit_ms: int = 500
+    scroll_input_into_view: bool = True
+    # The original required the peak response to exceed this length and stay
+    # stable for this many ticks before accepting it as complete.
+    min_response_chars: int = 50
+    stable_ticks: int = 2
 
 
 class Gemx:
@@ -141,6 +169,11 @@ class Gemx:
                     "width": cfg.viewport_width,
                     "height": cfg.viewport_height,
                 },
+                extra_http_headers=(
+                    dict(cfg.extra_http_headers)
+                    if cfg.extra_http_headers
+                    else None
+                ),
             )
             try:
                 page = (
@@ -155,32 +188,47 @@ class Gemx:
 
     async def _navigate(self, page: Page) -> None:
         cfg = self._config
+        logger.info("navigating to %s", GEMINI_URL)
         await page.goto(GEMINI_URL, wait_until="load", timeout=cfg.nav_timeout_ms)
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_load_state("networkidle", timeout=30_000)
         await page.wait_for_timeout(5_000)
 
+        await page.wait_for_timeout(cfg.post_load_settle_ms)
+
         body_text = await page.evaluate("() => document.body.innerText || ''")
         if "welcome to gemini" in body_text.lower():
             logger.info("welcome screen detected; dismissing")
             dismissed = await page.evaluate(_DISMISS_WELCOME_JS)
+            logger.info("welcome screen dismissed=%s", dismissed)
             await page.wait_for_timeout(3_000 if dismissed else 1_000)
 
         await page.wait_for_selector(INPUT_SELECTOR, timeout=cfg.input_timeout_ms)
+        logger.info("input box ready (%s)", INPUT_SELECTOR)
+
+        if cfg.scroll_input_into_view:
+            await page.evaluate(_SCROLL_INPUT_JS, INPUT_SELECTOR)
+            await page.wait_for_timeout(1_000)
 
     async def _enter_prompt(self, page: Page, prompt: str) -> None:
+        cfg = self._config
         await page.click(INPUT_SELECTOR)
         ok: bool = await page.evaluate(_INSERT_TEXT_JS, prompt)
         entered = (await page.locator(INPUT_SELECTOR).first.inner_text()).strip()
         logger.info("entered prompt: ok=%s chars=%d", ok, len(entered))
         if not ok or not entered:
             raise InputError("Quill did not accept the prompt text")
+        await page.wait_for_timeout(cfg.settle_after_input_ms)
 
     async def _submit(self, page: Page) -> None:
-        await page.wait_for_selector(
-            SEND_SELECTOR, timeout=self._config.input_timeout_ms
-        )
-        await page.click(SEND_SELECTOR)
+        cfg = self._config
+        await page.wait_for_selector(SEND_SELECTOR, timeout=cfg.input_timeout_ms)
+        # The original driver clicked the button via document.querySelector(...)
+        # .click() rather than Playwright's actionability-gated page.click(); the
+        # latter can no-op against Gemini's send button.
+        clicked: bool = await page.evaluate(_CLICK_SEND_JS, SEND_SELECTOR)
+        logger.info("found send button (%s); submitting clicked=%s", SEND_SELECTOR, clicked)
+        await page.wait_for_timeout(cfg.settle_after_submit_ms)
 
     async def _await_response(self, page: Page) -> str:
         cfg = self._config
@@ -189,12 +237,18 @@ class Gemx:
         )
 
         # Wait for a new response node to appear.
+        logger.info(
+            "waiting for response node (timeout=%ds, %d existing)",
+            cfg.response_timeout_s,
+            initial,
+        )
         elapsed = 0
         while elapsed < cfg.response_timeout_s:
             count = await page.evaluate(
                 "(s) => document.querySelectorAll(s).length", RESPONSE_SELECTOR
             )
             if count > initial:
+                logger.info("response node appeared after %ds", elapsed)
                 break
             await asyncio.sleep(cfg.poll_interval_s)
             elapsed += cfg.poll_interval_s
@@ -204,6 +258,9 @@ class Gemx:
             )
 
         # Stream until the longest node's text stops growing, retaining the peak.
+        # Gemini flashes the finished answer then re-mounts/empties the node, so
+        # the peak text is retained and a non-growing tick counts as settling.
+        logger.info("streaming response (stabilize timeout=%ds)", cfg.stabilization_timeout_s)
         best = ""
         last_len = 0
         stable = 0
@@ -217,11 +274,20 @@ class Gemx:
             if len(current) > len(best):
                 best = current
             if len(current) > last_len:
+                logger.info("response growing: %d chars (t=%ds)", len(current), waited)
                 last_len = len(current)
                 stable = 0
             elif best:
                 stable += 1
-                if stable >= 2 and len(best) > 0:
+                logger.info(
+                    "response stable %d/%d at %d chars (t=%ds)",
+                    stable,
+                    cfg.stable_ticks,
+                    len(best),
+                    waited,
+                )
+                if stable >= cfg.stable_ticks and len(best) > cfg.min_response_chars:
+                    logger.info("response settled at %d chars", len(best))
                     break
 
         if not best:
