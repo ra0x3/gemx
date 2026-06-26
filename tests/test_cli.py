@@ -16,13 +16,19 @@ def test_parser_defaults() -> None:
     assert args.prompt == "hello"
     assert args.format is OutputFormat.JSON
     assert args.profile_dir == Path("~/.gemx/profile")
-    assert args.headful is False
+    assert args.no_headless is False
+    assert args.browser_channel is None
 
 
-def test_parser_format_and_headful() -> None:
-    args = build_parser().parse_args(["-f", "xml", "--headful", "hi"])
+def test_parser_format_and_no_headless() -> None:
+    args = build_parser().parse_args(["-f", "xml", "--no-headless", "hi"])
     assert args.format is OutputFormat.XML
-    assert args.headful is True
+    assert args.no_headless is True
+
+
+def test_parser_browser_channel() -> None:
+    args = build_parser().parse_args(["--browser-channel", "chrome-beta", "hi"])
+    assert args.browser_channel == "chrome-beta"
 
 
 def test_parser_rejects_bad_format() -> None:

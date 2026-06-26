@@ -33,7 +33,7 @@ gemx --format xml "Describe the solar system as XML"
 echo "Summarize the plot of Dune in one sentence" | gemx --format txt
 
 # Watch the browser while it works
-gemx --headful --verbose "Hello there"
+gemx --no-headless --verbose "Hello there"
 ```
 
 The chosen `--format` (`json`, `xml`, or `txt`) is appended to the prompt as an
@@ -43,7 +43,8 @@ instruction *and* drives how Gemx parses the reply.
 | --- | --- |
 | `-f, --format {json,xml,txt}` | Output format (default: `json`). |
 | `-p, --profile-dir PATH` | Chrome profile dir (default: `~/.gemx/profile`). |
-| `--headful` | Show the browser window. |
+| `--no-headless` | Show the browser window. |
+| `--browser-channel` | Playwright browser channel to launch; defaults to `chrome` with `--no-headless`. |
 | `--response-timeout SECONDS` | Wait for a response to start (default: 180). |
 | `-v, --verbose` | Log progress to stderr. |
 
@@ -69,7 +70,7 @@ asyncio.run(main())
 
 Gemx drives a real, signed-in Gemini session. Point `--profile-dir` at a Chrome
 profile that is already logged into your Google account (run once with
-`--headful` to sign in); subsequent runs reuse that profile.
+`--no-headless` to sign in); subsequent runs reuse that profile.
 
 ## Development
 

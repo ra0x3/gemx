@@ -58,6 +58,28 @@ _LONGEST_RESPONSE_JS = """(args) => {
     return best;
 }"""
 
+_PAGE_ELEMENTS_JS = """() => {
+    return {
+        hasTextarea: document.querySelector('textarea') !== null,
+        hasContentEditable: document.querySelector('[contenteditable="true"]') !== null,
+        hasRichTextarea: document.querySelector('rich-textarea') !== null,
+        hasQlEditor: document.querySelector('.ql-editor') !== null,
+        visibleButtons: Array.from(document.querySelectorAll('button')).slice(0, 5)
+            .map(b => b.innerText || b.textContent).filter(t => t),
+        pageHeight: document.body.scrollHeight,
+        viewportHeight: window.innerHeight
+    };
+}"""
+
+_RESPONSE_DIAGNOSTICS_JS = """() => {
+    return {
+        hasThinking: document.querySelector('.thinking, .loading, [aria-label*="Loading"], [aria-label*="Thinking"]') !== null,
+        hasError: document.querySelector('.error, [data-error], [aria-label*="Error"]') !== null,
+        hasInput: document.querySelector('textarea, [contenteditable="true"]') !== null,
+        bodyText: document.body.innerText.substring(0, 200)
+    };
+}"""
+
 _SCROLL_INPUT_JS = """(selector) => {
     const el = document.querySelector(selector);
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -67,6 +89,16 @@ _CLICK_SEND_JS = """(selector) => {
     const btn = document.querySelector(selector);
     if (btn) { btn.click(); return true; }
     return false;
+}"""
+
+_SEND_BUTTON_STATE_JS = """(selector) => {
+    const btn = document.querySelector(selector);
+    if (!btn) return { exists: false };
+    return {
+        exists: true,
+        disabled: btn.disabled || btn.getAttribute('aria-disabled') === 'true',
+        visible: btn.offsetParent !== null
+    };
 }"""
 
 _DISMISS_WELCOME_JS = """() => {
@@ -99,6 +131,7 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     poll_interval_s: int = 2
     viewport_width: int = 1280
     viewport_height: int = 720
+    browser_channel: str | None = None
     user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -120,10 +153,14 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     settle_after_input_ms: int = 1_000
     settle_after_submit_ms: int = 500
     scroll_input_into_view: bool = True
-    # The original required the peak response to exceed this length and stay
-    # stable for this many ticks before accepting it as complete.
+    # The peak response must exceed this length and stay non-growing (or be
+    # emptied) for this many poll ticks before it is accepted as complete.
+    # Matches the original bot/gemini.py driver (stable_count >= 2).
     min_response_chars: int = 50
     stable_ticks: int = 2
+    # How often (seconds) to emit page diagnostics while waiting for the response
+    # node to appear.
+    diagnostics_interval_s: int = 10
 
 
 class Gemx:
@@ -152,17 +189,25 @@ class Gemx:
             ResponseParseError: If the reply could not be parsed as ``fmt``.
         """
         full_prompt = f"{prompt}\n\n{format_instruction(fmt)}"
-        raw = await self.ask_raw(full_prompt)
+        raw = await self.ask_raw(full_prompt, fmt)
         return parse_output(raw, fmt)
 
-    async def ask_raw(self, prompt: str) -> str:
-        """Send ``prompt`` verbatim and return Gemini's raw reply text."""
+    async def ask_raw(
+        self, prompt: str, expected_format: OutputFormat | None = None
+    ) -> str:
+        """Send ``prompt`` verbatim and return Gemini's raw reply text.
+
+        If ``expected_format`` is JSON or XML, Gemx waits for the response to
+        parse before returning. Gemini can briefly stop growing while still
+        holding an incomplete structured payload.
+        """
         cfg = self._config
         profile = cfg.profile_dir.expanduser()
         async with async_playwright() as p:
             context = await p.chromium.launch_persistent_context(
                 str(profile),
                 headless=cfg.headless,
+                channel=cfg.browser_channel,
                 args=list(cfg.launch_args),
                 user_agent=cfg.user_agent,
                 viewport={
@@ -182,7 +227,7 @@ class Gemx:
                 await self._navigate(page)
                 await self._enter_prompt(page, prompt)
                 await self._submit(page)
-                return await self._await_response(page)
+                return await self._await_response(page, expected_format)
             finally:
                 await context.close()
 
@@ -202,6 +247,9 @@ class Gemx:
             dismissed = await page.evaluate(_DISMISS_WELCOME_JS)
             logger.info("welcome screen dismissed=%s", dismissed)
             await page.wait_for_timeout(3_000 if dismissed else 1_000)
+
+        page_elements = await page.evaluate(_PAGE_ELEMENTS_JS)
+        logger.info("page elements: %s", page_elements)
 
         await page.wait_for_selector(INPUT_SELECTOR, timeout=cfg.input_timeout_ms)
         logger.info("input box ready (%s)", INPUT_SELECTOR)
@@ -223,14 +271,22 @@ class Gemx:
     async def _submit(self, page: Page) -> None:
         cfg = self._config
         await page.wait_for_selector(SEND_SELECTOR, timeout=cfg.input_timeout_ms)
+        button_info = await page.evaluate(_SEND_BUTTON_STATE_JS, SEND_SELECTOR)
+        logger.info("send button state: %s", button_info)
         # The original driver clicked the button via document.querySelector(...)
         # .click() rather than Playwright's actionability-gated page.click(); the
         # latter can no-op against Gemini's send button.
         clicked: bool = await page.evaluate(_CLICK_SEND_JS, SEND_SELECTOR)
-        logger.info("found send button (%s); submitting clicked=%s", SEND_SELECTOR, clicked)
+        logger.info(
+            "found send button (%s); submitting clicked=%s",
+            SEND_SELECTOR,
+            clicked,
+        )
         await page.wait_for_timeout(cfg.settle_after_submit_ms)
 
-    async def _await_response(self, page: Page) -> str:
+    async def _await_response(
+        self, page: Page, expected_format: OutputFormat | None = None
+    ) -> str:
         cfg = self._config
         initial = await page.evaluate(
             "(s) => document.querySelectorAll(s).length", RESPONSE_SELECTOR
@@ -248,50 +304,119 @@ class Gemx:
                 "(s) => document.querySelectorAll(s).length", RESPONSE_SELECTOR
             )
             if count > initial:
-                logger.info("response node appeared after %ds", elapsed)
+                logger.info(
+                    "response node appeared after %ds (count: %d -> %d)",
+                    elapsed,
+                    initial,
+                    count,
+                )
                 break
+            if elapsed > 0 and elapsed % cfg.diagnostics_interval_s == 0:
+                diag = await page.evaluate(_RESPONSE_DIAGNOSTICS_JS)
+                logger.info(
+                    "diag @%ds: thinking=%s error=%s input=%s",
+                    elapsed,
+                    diag.get("hasThinking"),
+                    diag.get("hasError"),
+                    diag.get("hasInput"),
+                )
+                if diag.get("hasError"):
+                    logger.warning(
+                        "error indicator detected; page snippet: %s",
+                        diag.get("bodyText"),
+                    )
             await asyncio.sleep(cfg.poll_interval_s)
             elapsed += cfg.poll_interval_s
         else:
+            await page.screenshot(path="/tmp/gemini-timeout-debug.png")
+            body_text = await page.evaluate(
+                "() => document.body.innerText.substring(0, 500)"
+            )
+            logger.error("response node timeout; page content: %s", body_text)
             raise ResponseTimeoutError(
                 f"No response node after {cfg.response_timeout_s}s"
             )
 
         # Stream until the longest node's text stops growing, retaining the peak.
         # Gemini flashes the finished answer then re-mounts/empties the node, so
-        # the peak text is retained and a non-growing tick counts as settling.
-        logger.info("streaming response (stabilize timeout=%ds)", cfg.stabilization_timeout_s)
+        # the peak text is retained. Structured responses must parse before they
+        # count as complete; a stable partial JSON object is still incomplete.
+        logger.info(
+            "streaming response (stabilize timeout=%ds)",
+            cfg.stabilization_timeout_s,
+        )
         best = ""
         last_len = 0
         stable = 0
         waited = 0
+        complete = False
+        last_parse_error: ValueError | None = None
         while waited < cfg.stabilization_timeout_s:
             await asyncio.sleep(cfg.poll_interval_s)
             waited += cfg.poll_interval_s
             current: str = await page.evaluate(
                 _LONGEST_RESPONSE_JS, [RESPONSE_SELECTOR, initial]
             )
-            if len(current) > len(best):
+            current_length = len(current)
+            if current_length > len(best):
                 best = current
-            if len(current) > last_len:
-                logger.info("response growing: %d chars (t=%ds)", len(current), waited)
-                last_len = len(current)
-                stable = 0
-            elif best:
-                stable += 1
+            if current_length > last_len:
                 logger.info(
-                    "response stable %d/%d at %d chars (t=%ds)",
-                    stable,
-                    cfg.stable_ticks,
+                    "response growing: %d chars (was %d)",
+                    current_length,
+                    last_len,
+                )
+                last_len = current_length
+                stable = 0
+            elif best and current_length <= last_len:
+                # Either stable or the node was emptied after flashing the answer.
+                # For structured output, still prove the peak text parses.
+                stable += 1
+                logger.debug(
+                    "response settled for %ds (current: %d, peak: %d)",
+                    stable * cfg.poll_interval_s,
+                    current_length,
                     len(best),
-                    waited,
                 )
                 if stable >= cfg.stable_ticks and len(best) > cfg.min_response_chars:
-                    logger.info("response settled at %d chars", len(best))
+                    if expected_format in (OutputFormat.JSON, OutputFormat.XML):
+                        try:
+                            parse_output(best, expected_format)
+                        except ValueError as exc:
+                            last_parse_error = exc
+                            if waited % cfg.diagnostics_interval_s == 0:
+                                logger.info(
+                                    "response stable but %s is incomplete "
+                                    "after %ds: %s",
+                                    expected_format.value,
+                                    waited,
+                                    exc,
+                                )
+                            continue
+                    logger.info(
+                        "generation complete after ~%ds (peak length: %d chars)",
+                        waited,
+                        len(best),
+                    )
+                    complete = True
                     break
+            elif waited % cfg.diagnostics_interval_s == 0:
+                logger.info("still waiting for response content after %ds...", waited)
 
         if not best:
             raise ResponseTimeoutError("Response node never produced text")
+        if expected_format in (OutputFormat.JSON, OutputFormat.XML) and not complete:
+            await page.screenshot(path="/tmp/gemini-incomplete-response.png")
+            if last_parse_error is not None:
+                raise ResponseTimeoutError(
+                    "Response did not become complete "
+                    f"{expected_format.value} after "
+                    f"{cfg.stabilization_timeout_s}s: {last_parse_error}"
+                ) from last_parse_error
+            raise ResponseTimeoutError(
+                "Response did not become complete "
+                f"{expected_format.value} after {cfg.stabilization_timeout_s}s"
+            )
         return best
 
     async def __aenter__(self) -> Gemx:

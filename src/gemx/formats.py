@@ -67,7 +67,18 @@ def _strip_fences(text: str) -> str:
 def _clean_json_text(text: str) -> str:
     """Best-effort repair of common JSON quirks in LLM output."""
     text = text.strip()
+    # Escape stray double-quotes inside values that denote feet/inches ("6'7"")
+    # or pounds ("282 lbs""), which otherwise break the string early.
+    text = re.sub(r'(\d+\'\d+)"(")', r'\1\\"\2', text)
+    text = re.sub(r'(\d+ lbs)"(")', r'\1\\"\2', text)
+    # Strip trailing commas before a closing brace/bracket.
     text = re.sub(r",\s*([}\]])", r"\1", text)
+    # Python-isms LLMs sometimes emit instead of JSON literals.
+    text = re.sub(r"\bNone\b", "null", text)
+    text = re.sub(r"\bTrue\b", "true", text)
+    text = re.sub(r"\bFalse\b", "false", text)
+    # Leading + on numbers (e.g. "margin": +5).
+    text = re.sub(r"([:,\[])\s*\+(\d+\.?\d*)", r"\1 \2", text)
     return text
 
 

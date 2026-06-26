@@ -46,9 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Chrome profile dir for the session (default: {DEFAULT_PROFILE_DIR}).",
     )
     parser.add_argument(
-        "--headful",
+        "--no-headless",
         action="store_true",
         help="Show the browser window instead of running headless.",
+    )
+    parser.add_argument(
+        "--browser-channel",
+        default=None,
+        help=(
+            "Playwright browser channel to launch. Defaults to chrome when "
+            "--no-headless is set."
+        ),
     )
     parser.add_argument(
         "--response-timeout",
@@ -85,7 +93,8 @@ async def _run(args: argparse.Namespace) -> int:
 
     config = GemxConfig(
         profile_dir=args.profile_dir,
-        headless=not args.headful,
+        headless=not args.no_headless,
+        browser_channel=args.browser_channel or ("chrome" if args.no_headless else None),
         response_timeout_s=args.response_timeout,
     )
     try:
