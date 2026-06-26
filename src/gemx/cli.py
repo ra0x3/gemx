@@ -66,6 +66,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max seconds to wait for a response to start (default: 180).",
     )
     parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=None,
+        metavar="COUNT",
+        help=(
+            "Retry transient Gemini response failures up to COUNT times. "
+            "Omitting this flag disables retries."
+        ),
+    )
+    parser.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -96,6 +106,7 @@ async def _run(args: argparse.Namespace) -> int:
         headless=not args.no_headless,
         browser_channel=args.browser_channel or ("chrome" if args.no_headless else None),
         response_timeout_s=args.response_timeout,
+        max_retries=args.max_retries or 0,
     )
     try:
         async with Gemx(config) as gemx:

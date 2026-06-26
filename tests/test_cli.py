@@ -18,6 +18,7 @@ def test_parser_defaults() -> None:
     assert args.profile_dir == Path("~/.gemx/profile")
     assert args.no_headless is False
     assert args.browser_channel is None
+    assert args.max_retries is None
 
 
 def test_parser_format_and_no_headless() -> None:
@@ -29,6 +30,11 @@ def test_parser_format_and_no_headless() -> None:
 def test_parser_browser_channel() -> None:
     args = build_parser().parse_args(["--browser-channel", "chrome-beta", "hi"])
     assert args.browser_channel == "chrome-beta"
+
+
+def test_parser_max_retries() -> None:
+    args = build_parser().parse_args(["--max-retries", "3", "hi"])
+    assert args.max_retries == 3
 
 
 def test_parser_rejects_bad_format() -> None:

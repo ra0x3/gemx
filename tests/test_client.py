@@ -61,6 +61,7 @@ def test_config_defaults() -> None:
     assert cfg.headless is True
     assert cfg.browser_channel is None
     assert cfg.response_timeout_s == 180
+    assert cfg.max_retries == 0
     assert "--no-sandbox" in cfg.launch_args
 
 
@@ -94,6 +95,58 @@ def test_ask_appends_format_instruction(monkeypatch) -> None:
     assert "base prompt" in captured["prompt"]
     assert format_instruction(OutputFormat.JSON) in captured["prompt"]
     assert captured["expected_format"] == "json"
+
+
+@pytest.mark.asyncio
+async def test_ask_raw_does_not_retry_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fail_once(
+        self: Gemx,
+        prompt: str,
+        expected_format: OutputFormat | None = None,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        raise ResponseTimeoutError("temporary failure")
+
+    monkeypatch.setattr(Gemx, "_ask_raw_once", fail_once)
+
+    with pytest.raises(ResponseTimeoutError, match="temporary failure"):
+        await Gemx(GemxConfig(profile_dir=Path("/tmp/p"))).ask_raw(
+            "prompt",
+            OutputFormat.JSON,
+        )
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ask_raw_retries_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def fail_then_succeed(
+        self: Gemx,
+        prompt: str,
+        expected_format: OutputFormat | None = None,
+    ) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ResponseTimeoutError("temporary failure")
+        return '{"ok": true}'
+
+    monkeypatch.setattr(Gemx, "_ask_raw_once", fail_then_succeed)
+
+    cfg = GemxConfig(profile_dir=Path("/tmp/p"), max_retries=1)
+    result = await Gemx(cfg).ask_raw("prompt", OutputFormat.JSON)
+
+    assert result == '{"ok": true}'
+    assert calls == 2
 
 
 @pytest.mark.asyncio

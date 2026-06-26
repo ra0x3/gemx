@@ -192,6 +192,7 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     viewport_width: int = 1280
     viewport_height: int = 720
     browser_channel: str | None = None
+    max_retries: int = 0
     user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -261,6 +262,26 @@ class Gemx:
         parse before returning. Gemini can briefly stop growing while still
         holding an incomplete structured payload.
         """
+        attempts = max(0, self._config.max_retries) + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return await self._ask_raw_once(prompt, expected_format)
+            except ResponseTimeoutError:
+                if attempt >= attempts:
+                    raise
+                logger.warning(
+                    "Gemini attempt %d/%d failed; retrying",
+                    attempt,
+                    attempts,
+                    exc_info=True,
+                )
+
+        raise ResponseTimeoutError("Gemini retry loop exited without a result")
+
+    async def _ask_raw_once(
+        self, prompt: str, expected_format: OutputFormat | None = None
+    ) -> str:
+        """Run one browser-backed Gemini request attempt."""
         cfg = self._config
         profile = cfg.profile_dir.expanduser()
         async with async_playwright() as p:

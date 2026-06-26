@@ -46,6 +46,7 @@ instruction *and* drives how Gemx parses the reply.
 | `--no-headless` | Show the browser window. |
 | `--browser-channel` | Playwright browser channel to launch; defaults to `chrome` with `--no-headless`. |
 | `--response-timeout SECONDS` | Wait for a response to start (default: 180). |
+| `--max-retries COUNT` | Retry transient Gemini response failures up to COUNT times. Omitted means no retries. |
 | `-v, --verbose` | Log progress to stderr. |
 
 ## Library
