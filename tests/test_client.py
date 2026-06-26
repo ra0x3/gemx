@@ -19,20 +19,35 @@ from gemx.formats import OutputFormat, format_instruction
 
 
 class FakeResponsePage:
-    def __init__(self, response_texts: list[str]) -> None:
+    def __init__(
+        self,
+        response_texts: list[str],
+        *,
+        durable_node: bool = True,
+    ) -> None:
         self._response_texts = response_texts
         self._selector_calls = 0
         self._response_reads = 0
+        self._durable_node = durable_node
         self.screenshots: list[str] = []
 
     async def evaluate(self, script: str, *_args: object) -> object:
-        if script == "(s) => document.querySelectorAll(s).length":
-            self._selector_calls += 1
-            return 0 if self._selector_calls == 1 else 1
+        if script == "() => window.__gemxInitialCounts || {}":
+            return {client_module.RESPONSE_SELECTOR: 0}
         if script == client_module._LONGEST_RESPONSE_JS:
+            if not self._durable_node and self._response_reads == 0:
+                self._response_reads += 1
+                return {"text": "", "selector": "", "length": 0}
             index = min(self._response_reads, len(self._response_texts) - 1)
             self._response_reads += 1
-            return self._response_texts[index]
+            text = self._response_texts[index]
+            return {
+                "text": text,
+                "selector": client_module.RESPONSE_SELECTOR,
+                "length": len(text),
+            }
+        if script == client_module._READ_RESPONSE_OBSERVER_JS:
+            return {"text": "", "selector": "", "length": 0}
         if "document.body.innerText" in script:
             return ""
         raise AssertionError(f"unexpected evaluate script: {script}")
@@ -125,3 +140,25 @@ async def test_await_response_rejects_stable_incomplete_json(
         await Gemx(cfg)._await_response(page, OutputFormat.JSON)
 
     assert page.screenshots == ["/tmp/gemini-incomplete-response.png"]
+
+
+@pytest.mark.asyncio
+async def test_await_response_uses_transient_observed_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(client_module.asyncio, "sleep", no_sleep)
+    page = FakeResponsePage(['{"a": 1}', '{"a": 1}'], durable_node=False)
+    cfg = GemxConfig(
+        profile_dir=Path("/tmp/p"),
+        poll_interval_s=1,
+        stable_ticks=1,
+        min_response_chars=1,
+        stabilization_timeout_s=5,
+    )
+
+    result = await Gemx(cfg)._await_response(page, OutputFormat.JSON)
+
+    assert result == '{"a": 1}'

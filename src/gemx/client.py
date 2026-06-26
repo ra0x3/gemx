@@ -32,6 +32,14 @@ GEMINI_URL = "https://gemini.google.com/app"
 INPUT_SELECTOR = '.ql-editor[contenteditable="true"]'
 SEND_SELECTOR = 'button[aria-label="Send message"]'
 RESPONSE_SELECTOR = "message-content .markdown"
+RESPONSE_SELECTORS = (
+    "message-content .markdown",
+    "message-content",
+    "model-response .markdown",
+    "model-response",
+    ".model-response-text",
+    ".markdown",
+)
 
 _INSERT_TEXT_JS = """(text) => {
     const editor = document.querySelector('.ql-editor[contenteditable="true"]');
@@ -46,16 +54,68 @@ _INSERT_TEXT_JS = """(text) => {
     return document.execCommand('insertText', false, text);
 }"""
 
-_LONGEST_RESPONSE_JS = """(args) => {
-    const [selector, initialCount] = args;
-    const els = document.querySelectorAll(selector);
-    if (els.length <= initialCount) return '';
-    let best = '';
-    els.forEach(el => {
-        const t = el.innerText || el.textContent || '';
-        if (t.length > best.length) best = t;
+_INSTALL_RESPONSE_OBSERVER_JS = """(selectors) => {
+    if (window.__gemxResponseObserver) {
+        window.__gemxResponseObserver.disconnect();
+    }
+    window.__gemxInitialCounts = {};
+    selectors.forEach(sel => {
+        window.__gemxInitialCounts[sel] = document.querySelectorAll(sel).length;
     });
-    return best;
+    window.__gemxBestResponse = { text: '', selector: '', length: 0 };
+
+    const scan = () => {
+        selectors.forEach(sel => {
+            const els = Array.from(document.querySelectorAll(sel));
+            const initial = window.__gemxInitialCounts[sel] || 0;
+            els.slice(initial).forEach(el => {
+                const text = el.innerText || el.textContent || '';
+                if (text.length > window.__gemxBestResponse.length) {
+                    window.__gemxBestResponse = {
+                        text,
+                        selector: sel,
+                        length: text.length
+                    };
+                }
+            });
+        });
+        return window.__gemxBestResponse;
+    };
+
+    scan();
+    window.__gemxResponseObserver = new MutationObserver(scan);
+    window.__gemxResponseObserver.observe(document.body, {
+        childList: true,
+        subtree: true,
+        characterData: true
+    });
+    return window.__gemxInitialCounts;
+}"""
+
+_READ_RESPONSE_OBSERVER_JS = """() => {
+    return window.__gemxBestResponse || { text: '', selector: '', length: 0 };
+}"""
+
+_LONGEST_RESPONSE_JS = """(args) => {
+    const [selectors, initialCounts] = args;
+    let best = '';
+    let selector = '';
+    selectors.forEach(sel => {
+        const els = Array.from(document.querySelectorAll(sel));
+        const initial = initialCounts[sel] || 0;
+        els.slice(initial).forEach(el => {
+            const t = el.innerText || el.textContent || '';
+            if (t.length > best.length) {
+                best = t;
+                selector = sel;
+            }
+        });
+    });
+    const observed = window.__gemxBestResponse || { text: '', selector: '', length: 0 };
+    if ((observed.text || '').length > best.length) {
+        return observed;
+    }
+    return { text: best, selector, length: best.length };
 }"""
 
 _PAGE_ELEMENTS_JS = """() => {
@@ -271,6 +331,10 @@ class Gemx:
     async def _submit(self, page: Page) -> None:
         cfg = self._config
         await page.wait_for_selector(SEND_SELECTOR, timeout=cfg.input_timeout_ms)
+        initial_counts = await page.evaluate(
+            _INSTALL_RESPONSE_OBSERVER_JS, list(RESPONSE_SELECTORS)
+        )
+        logger.info("response observer installed: %s", initial_counts)
         button_info = await page.evaluate(_SEND_BUTTON_STATE_JS, SEND_SELECTOR)
         logger.info("send button state: %s", button_info)
         # The original driver clicked the button via document.querySelector(...)
@@ -288,37 +352,40 @@ class Gemx:
         self, page: Page, expected_format: OutputFormat | None = None
     ) -> str:
         cfg = self._config
-        initial = await page.evaluate(
-            "(s) => document.querySelectorAll(s).length", RESPONSE_SELECTOR
+        initial_counts = await page.evaluate(
+            "() => window.__gemxInitialCounts || {}"
         )
 
-        # Wait for a new response node to appear.
+        # Wait for either a durable response node or transient observed text.
         logger.info(
-            "waiting for response node (timeout=%ds, %d existing)",
+            "waiting for response node/text (timeout=%ds, initial=%s)",
             cfg.response_timeout_s,
-            initial,
+            initial_counts,
         )
         elapsed = 0
         while elapsed < cfg.response_timeout_s:
-            count = await page.evaluate(
-                "(s) => document.querySelectorAll(s).length", RESPONSE_SELECTOR
+            current = await page.evaluate(
+                _LONGEST_RESPONSE_JS, [list(RESPONSE_SELECTORS), initial_counts]
             )
-            if count > initial:
+            current_text = str(current.get("text") or "")
+            if current_text:
                 logger.info(
-                    "response node appeared after %ds (count: %d -> %d)",
+                    "response text appeared after %ds (%d chars via %s)",
                     elapsed,
-                    initial,
-                    count,
+                    len(current_text),
+                    current.get("selector"),
                 )
                 break
             if elapsed > 0 and elapsed % cfg.diagnostics_interval_s == 0:
                 diag = await page.evaluate(_RESPONSE_DIAGNOSTICS_JS)
+                observed = await page.evaluate(_READ_RESPONSE_OBSERVER_JS)
                 logger.info(
-                    "diag @%ds: thinking=%s error=%s input=%s",
+                    "diag @%ds: thinking=%s error=%s input=%s observed=%s",
                     elapsed,
                     diag.get("hasThinking"),
                     diag.get("hasError"),
                     diag.get("hasInput"),
+                    observed.get("length"),
                 )
                 if diag.get("hasError"):
                     logger.warning(
@@ -334,7 +401,7 @@ class Gemx:
             )
             logger.error("response node timeout; page content: %s", body_text)
             raise ResponseTimeoutError(
-                f"No response node after {cfg.response_timeout_s}s"
+                f"No response text after {cfg.response_timeout_s}s"
             )
 
         # Stream until the longest node's text stops growing, retaining the peak.
@@ -354,17 +421,20 @@ class Gemx:
         while waited < cfg.stabilization_timeout_s:
             await asyncio.sleep(cfg.poll_interval_s)
             waited += cfg.poll_interval_s
-            current: str = await page.evaluate(
-                _LONGEST_RESPONSE_JS, [RESPONSE_SELECTOR, initial]
+            current = await page.evaluate(
+                _LONGEST_RESPONSE_JS, [list(RESPONSE_SELECTORS), initial_counts]
             )
-            current_length = len(current)
+            current_text = str(current.get("text") or "")
+            current_selector = str(current.get("selector") or "")
+            current_length = len(current_text)
             if current_length > len(best):
-                best = current
+                best = current_text
             if current_length > last_len:
                 logger.info(
-                    "response growing: %d chars (was %d)",
+                    "response growing: %d chars (was %d via %s)",
                     current_length,
                     last_len,
+                    current_selector,
                 )
                 last_len = current_length
                 stable = 0
@@ -407,6 +477,11 @@ class Gemx:
             raise ResponseTimeoutError("Response node never produced text")
         if expected_format in (OutputFormat.JSON, OutputFormat.XML) and not complete:
             await page.screenshot(path="/tmp/gemini-incomplete-response.png")
+            logger.warning(
+                "response did not parse as %s; preview: %r",
+                expected_format.value,
+                best[:500],
+            )
             if last_parse_error is not None:
                 raise ResponseTimeoutError(
                     "Response did not become complete "
