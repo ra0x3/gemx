@@ -107,6 +107,7 @@ async def _run(args: argparse.Namespace) -> int:
         browser_channel=args.browser_channel or ("chrome" if args.no_headless else None),
         response_timeout_s=args.response_timeout,
         max_retries=args.max_retries or 0,
+        log_level=logging.DEBUG if args.verbose else logging.WARNING,
     )
     try:
         async with Gemx(config) as gemx:
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for the ``gemx`` console script."""
     args = build_parser().parse_args(argv)
     logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
+        level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )

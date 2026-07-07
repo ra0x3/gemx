@@ -47,7 +47,7 @@ instruction *and* drives how Gemx parses the reply.
 | `--browser-channel` | Playwright browser channel to launch; defaults to `chrome` with `--no-headless`. |
 | `--response-timeout SECONDS` | Wait for a response to start (default: 180). |
 | `--max-retries COUNT` | Retry transient Gemini response failures up to COUNT times. Omitted means no retries. |
-| `-v, --verbose` | Log progress to stderr. |
+| `-v, --verbose` | Log DEBUG progress to stderr. |
 
 ## Library
 
@@ -58,7 +58,7 @@ from gemx import Gemx, GemxConfig, OutputFormat
 
 
 async def main() -> None:
-    config = GemxConfig(profile_dir=Path("~/.gemx/profile"))
+    config = GemxConfig(profile_dir=Path("~/.gemx/profile"), log_level="INFO")
     async with Gemx(config) as gemx:
         data = await gemx.ask("List 3 fruits as JSON", OutputFormat.JSON)
         print(data)
@@ -66,6 +66,9 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+Set `log_level="DEBUG"` for full browser automation diagnostics, or
+`log_level="WARNING"` to emit only problems.
 
 ## Authentication
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,53 @@ from .errors import InputError, ResponseTimeoutError
 from .formats import OutputFormat, format_instruction, parse_output
 
 logger = logging.getLogger("gemx")
+
+LogLevel = int | str | None
+_ACTIVE_LOG_LEVEL: ContextVar[int | None] = ContextVar(
+    "gemx_active_log_level", default=None
+)
+_LOG_LEVEL_NAMES = {
+    "CRITICAL": logging.CRITICAL,
+    "ERROR": logging.ERROR,
+    "WARNING": logging.WARNING,
+    "WARN": logging.WARNING,
+    "INFO": logging.INFO,
+    "DEBUG": logging.DEBUG,
+    "NOTSET": logging.NOTSET,
+}
+
+
+class _GemxLogLevelFilter(logging.Filter):
+    """Gate gemx records by the current session's requested minimum level."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        configured_level = _ACTIVE_LOG_LEVEL.get()
+        min_level = (
+            configured_level
+            if configured_level is not None
+            else logging.getLogger().getEffectiveLevel()
+        )
+        return record.levelno >= min_level
+
+
+def _normalize_log_level(level: LogLevel) -> int | None:
+    if level is None:
+        return None
+    if isinstance(level, int):
+        return level
+
+    name = level.strip().upper()
+    if name in _LOG_LEVEL_NAMES:
+        return _LOG_LEVEL_NAMES[name]
+    raise ValueError(
+        "GemxConfig.log_level must be one of "
+        f"{', '.join(sorted(_LOG_LEVEL_NAMES))}, got {level!r}"
+    )
+
+
+if not any(isinstance(filt, _GemxLogLevelFilter) for filt in logger.filters):
+    logger.addFilter(_GemxLogLevelFilter())
+logger.setLevel(logging.DEBUG)
 
 GEMINI_URL = "https://gemini.google.com/app"
 INPUT_SELECTOR = '.ql-editor[contenteditable="true"]'
@@ -193,6 +241,9 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     viewport_height: int = 720
     browser_channel: str | None = None
     max_retries: int = 0
+    # Minimum gemx log level for this session. None preserves the application's
+    # ambient logging level; pass DEBUG/INFO/WARNING/etc. to make gemx explicit.
+    log_level: LogLevel = None
     user_agent: str = (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -235,6 +286,7 @@ class Gemx:
 
     def __init__(self, config: GemxConfig) -> None:
         self._config = config
+        self._log_level = _normalize_log_level(config.log_level)
 
     async def ask(
         self, prompt: str, fmt: OutputFormat = OutputFormat.JSON
@@ -262,19 +314,23 @@ class Gemx:
         parse before returning. Gemini can briefly stop growing while still
         holding an incomplete structured payload.
         """
-        attempts = max(0, self._config.max_retries) + 1
-        for attempt in range(1, attempts + 1):
-            try:
-                return await self._ask_raw_once(prompt, expected_format)
-            except ResponseTimeoutError:
-                if attempt >= attempts:
-                    raise
-                logger.warning(
-                    "Gemini attempt %d/%d failed; retrying",
-                    attempt,
-                    attempts,
-                    exc_info=True,
-                )
+        token = _ACTIVE_LOG_LEVEL.set(self._log_level)
+        try:
+            attempts = max(0, self._config.max_retries) + 1
+            for attempt in range(1, attempts + 1):
+                try:
+                    return await self._ask_raw_once(prompt, expected_format)
+                except ResponseTimeoutError:
+                    if attempt >= attempts:
+                        raise
+                    logger.warning(
+                        "Gemini attempt %d/%d failed; retrying",
+                        attempt,
+                        attempts,
+                        exc_info=True,
+                    )
+        finally:
+            _ACTIVE_LOG_LEVEL.reset(token)
 
         raise ResponseTimeoutError("Gemini retry loop exited without a result")
 
@@ -314,7 +370,7 @@ class Gemx:
 
     async def _navigate(self, page: Page) -> None:
         cfg = self._config
-        logger.info("navigating to %s", GEMINI_URL)
+        logger.debug("navigating to %s", GEMINI_URL)
         await page.goto(GEMINI_URL, wait_until="load", timeout=cfg.nav_timeout_ms)
         await page.wait_for_load_state("domcontentloaded")
         await page.wait_for_load_state("networkidle", timeout=30_000)
@@ -324,16 +380,16 @@ class Gemx:
 
         body_text = await page.evaluate("() => document.body.innerText || ''")
         if "welcome to gemini" in body_text.lower():
-            logger.info("welcome screen detected; dismissing")
+            logger.debug("welcome screen detected; dismissing")
             dismissed = await page.evaluate(_DISMISS_WELCOME_JS)
-            logger.info("welcome screen dismissed=%s", dismissed)
+            logger.debug("welcome screen dismissed=%s", dismissed)
             await page.wait_for_timeout(3_000 if dismissed else 1_000)
 
         page_elements = await page.evaluate(_PAGE_ELEMENTS_JS)
-        logger.info("page elements: %s", page_elements)
+        logger.debug("page elements: %s", page_elements)
 
         await page.wait_for_selector(INPUT_SELECTOR, timeout=cfg.input_timeout_ms)
-        logger.info("input box ready (%s)", INPUT_SELECTOR)
+        logger.debug("input box ready (%s)", INPUT_SELECTOR)
 
         if cfg.scroll_input_into_view:
             await page.evaluate(_SCROLL_INPUT_JS, INPUT_SELECTOR)
@@ -344,7 +400,7 @@ class Gemx:
         await page.click(INPUT_SELECTOR)
         ok: bool = await page.evaluate(_INSERT_TEXT_JS, prompt)
         entered = (await page.locator(INPUT_SELECTOR).first.inner_text()).strip()
-        logger.info("entered prompt: ok=%s chars=%d", ok, len(entered))
+        logger.debug("entered prompt: ok=%s chars=%d", ok, len(entered))
         if not ok or not entered:
             raise InputError("Quill did not accept the prompt text")
         await page.wait_for_timeout(cfg.settle_after_input_ms)
@@ -355,14 +411,14 @@ class Gemx:
         initial_counts = await page.evaluate(
             _INSTALL_RESPONSE_OBSERVER_JS, list(RESPONSE_SELECTORS)
         )
-        logger.info("response observer installed: %s", initial_counts)
+        logger.debug("response observer installed: %s", initial_counts)
         button_info = await page.evaluate(_SEND_BUTTON_STATE_JS, SEND_SELECTOR)
-        logger.info("send button state: %s", button_info)
+        logger.debug("send button state: %s", button_info)
         # The original driver clicked the button via document.querySelector(...)
         # .click() rather than Playwright's actionability-gated page.click(); the
         # latter can no-op against Gemini's send button.
         clicked: bool = await page.evaluate(_CLICK_SEND_JS, SEND_SELECTOR)
-        logger.info(
+        logger.debug(
             "found send button (%s); submitting clicked=%s",
             SEND_SELECTOR,
             clicked,
@@ -378,7 +434,7 @@ class Gemx:
         )
 
         # Wait for either a durable response node or transient observed text.
-        logger.info(
+        logger.debug(
             "waiting for response node/text (timeout=%ds, initial=%s)",
             cfg.response_timeout_s,
             initial_counts,
@@ -390,7 +446,7 @@ class Gemx:
             )
             current_text = str(current.get("text") or "")
             if current_text:
-                logger.info(
+                logger.debug(
                     "response text appeared after %ds (%d chars via %s)",
                     elapsed,
                     len(current_text),
@@ -400,7 +456,7 @@ class Gemx:
             if elapsed > 0 and elapsed % cfg.diagnostics_interval_s == 0:
                 diag = await page.evaluate(_RESPONSE_DIAGNOSTICS_JS)
                 observed = await page.evaluate(_READ_RESPONSE_OBSERVER_JS)
-                logger.info(
+                logger.debug(
                     "diag @%ds: thinking=%s error=%s input=%s observed=%s",
                     elapsed,
                     diag.get("hasThinking"),
@@ -429,7 +485,7 @@ class Gemx:
         # Gemini flashes the finished answer then re-mounts/empties the node, so
         # the peak text is retained. Structured responses must parse before they
         # count as complete; a stable partial JSON object is still incomplete.
-        logger.info(
+        logger.debug(
             "streaming response (stabilize timeout=%ds)",
             cfg.stabilization_timeout_s,
         )
@@ -451,7 +507,7 @@ class Gemx:
             if current_length > len(best):
                 best = current_text
             if current_length > last_len:
-                logger.info(
+                logger.debug(
                     "response growing: %d chars (was %d via %s)",
                     current_length,
                     last_len,
@@ -476,7 +532,7 @@ class Gemx:
                         except ValueError as exc:
                             last_parse_error = exc
                             if waited % cfg.diagnostics_interval_s == 0:
-                                logger.info(
+                                logger.debug(
                                     "response stable but %s is incomplete "
                                     "after %ds: %s",
                                     expected_format.value,
@@ -492,7 +548,7 @@ class Gemx:
                     complete = True
                     break
             elif waited % cfg.diagnostics_interval_s == 0:
-                logger.info("still waiting for response content after %ds...", waited)
+                logger.debug("still waiting for response content after %ds...", waited)
 
         if not best:
             raise ResponseTimeoutError("Response node never produced text")
