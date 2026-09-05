@@ -82,6 +82,42 @@ def _clean_json_text(text: str) -> str:
     return text
 
 
+def _first_json_object(text: str) -> str | None:
+    """The first complete top-level ``{...}`` in ``text``, or None.
+
+    ``rfind("}")`` walks past the object into whatever Gemini wrote after it,
+    and on a reply that is still streaming it lands on a nested brace, so the
+    slice it hands back is not the object at all. Depth counting stops at the
+    real end; strings and their escapes are skipped so a brace inside a value
+    does not move the depth.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
+
+
 def parse_output(text: str, fmt: OutputFormat) -> Any:
     """Extract a structured value from Gemini's raw reply for ``fmt``.
 
@@ -97,11 +133,14 @@ def parse_output(text: str, fmt: OutputFormat) -> Any:
         return cleaned
 
     if fmt is OutputFormat.JSON:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}") + 1
-        candidate = cleaned[start:end] if start != -1 and end != 0 else cleaned
+        repaired = _clean_json_text(cleaned)
+        candidate = _first_json_object(repaired)
+        if candidate is None:
+            start = repaired.find("{")
+            end = repaired.rfind("}") + 1
+            candidate = repaired[start:end] if start != -1 and end != 0 else repaired
         try:
-            return json.loads(_clean_json_text(candidate))
+            return json.loads(candidate)
         except json.JSONDecodeError as exc:
             raise ValueError(f"Could not parse JSON from response: {exc}") from exc
 
