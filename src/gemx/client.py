@@ -88,6 +88,17 @@ RESPONSE_SELECTORS = (
     ".model-response-text",
     ".markdown",
 )
+CANNED_REPLIES = (
+    "i'm having a hard time fulfilling your request",
+    "i seem to be encountering an error",
+    "i encountered an error doing what you asked",
+)
+
+
+def is_canned_reply(text: str) -> bool:
+    """True when ``text`` is one of Gemini's stock refusal or error replies."""
+    lowered = text.lower().replace("’", "'")
+    return len(lowered) < 300 and any(phrase in lowered for phrase in CANNED_REPLIES)
 
 _INSERT_TEXT_JS = """(text) => {
     const editor = document.querySelector('.ql-editor[contenteditable="true"]');
@@ -525,6 +536,14 @@ class Gemx:
                     current_length,
                     len(best),
                 )
+                if (
+                    stable >= cfg.stable_ticks
+                    and expected_format in (OutputFormat.JSON, OutputFormat.XML)
+                    and is_canned_reply(best)
+                ):
+                    raise ResponseTimeoutError(
+                        f"Gemini returned a canned reply: {best[:200]!r}"
+                    )
                 if stable >= cfg.stable_ticks and len(best) > cfg.min_response_chars:
                     if expected_format in (OutputFormat.JSON, OutputFormat.XML):
                         try:
