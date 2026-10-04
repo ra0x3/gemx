@@ -17,3 +17,7 @@ class ResponseTimeoutError(GemxError):
 
 class ResponseParseError(GemxError):
     """Gemini responded, but the payload could not be parsed for the format."""
+
+
+class ProfileBusyError(GemxError):
+    """Another Gemx session held the browser profile past the lock timeout."""

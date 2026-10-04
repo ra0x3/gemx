@@ -16,15 +16,18 @@ if it were an API. The non-obvious parts (and why this exists):
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
+import time
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from playwright.async_api import Page, async_playwright
 
-from .errors import InputError, ResponseTimeoutError
+from .errors import InputError, ProfileBusyError, ResponseTimeoutError
 from .formats import OutputFormat, format_instruction, parse_output
 
 logger = logging.getLogger("gemx")
@@ -284,6 +287,8 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     # How often (seconds) to emit page diagnostics while waiting for the response
     # node to appear.
     diagnostics_interval_s: int = 10
+    # How long to wait for another session to release the browser profile.
+    lock_timeout_s: int = 900
 
 
 class Gemx:
@@ -327,23 +332,55 @@ class Gemx:
         """
         token = _ACTIVE_LOG_LEVEL.set(self._log_level)
         try:
-            attempts = max(0, self._config.max_retries) + 1
-            for attempt in range(1, attempts + 1):
-                try:
-                    return await self._ask_raw_once(prompt, expected_format)
-                except ResponseTimeoutError:
-                    if attempt >= attempts:
-                        raise
-                    logger.warning(
-                        "Gemini attempt %d/%d failed; retrying",
-                        attempt,
-                        attempts,
-                        exc_info=True,
-                    )
+            async with self._profile_lock():
+                attempts = max(0, self._config.max_retries) + 1
+                for attempt in range(1, attempts + 1):
+                    try:
+                        return await self._ask_raw_once(prompt, expected_format)
+                    except ResponseTimeoutError:
+                        if attempt >= attempts:
+                            raise
+                        logger.warning(
+                            "Gemini attempt %d/%d failed; retrying",
+                            attempt,
+                            attempts,
+                            exc_info=True,
+                        )
         finally:
             _ACTIVE_LOG_LEVEL.reset(token)
 
         raise ResponseTimeoutError("Gemini retry loop exited without a result")
+
+    @asynccontextmanager
+    async def _profile_lock(self) -> AsyncIterator[None]:
+        """Hold the browser profile for one whole request, retries included.
+
+        Chromium refuses a persistent profile another process has open, so
+        every job sharing a profile takes turns through a lockfile beside it.
+
+        Raises:
+            ProfileBusyError: If the profile stayed held past ``lock_timeout_s``.
+        """
+        profile = self._config.profile_dir.expanduser()
+        path = profile.with_name(f"{profile.name}.gemx.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        deadline = time.monotonic() + self._config.lock_timeout_s
+        with path.open("w") as handle:
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise ProfileBusyError(
+                            f"profile {profile} still in use after "
+                            f"{self._config.lock_timeout_s}s"
+                        ) from None
+                    await asyncio.sleep(2)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     async def _ask_raw_once(
         self, prompt: str, expected_format: OutputFormat | None = None

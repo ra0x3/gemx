@@ -9,6 +9,7 @@ from .client import Gemx, GemxConfig
 from .errors import (
     GemxError,
     InputError,
+    ProfileBusyError,
     ResponseParseError,
     ResponseTimeoutError,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "GemxError",
     "InputError",
     "OutputFormat",
+    "ProfileBusyError",
     "ResponseParseError",
     "ResponseTimeoutError",
     "format_instruction",
