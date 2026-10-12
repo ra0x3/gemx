@@ -95,6 +95,7 @@ CANNED_REPLIES = (
     "i'm having a hard time fulfilling your request",
     "i seem to be encountering an error",
     "i encountered an error doing what you asked",
+    "something went wrong. please try your request again",
 )
 
 
@@ -178,6 +179,20 @@ _LONGEST_RESPONSE_JS = """(args) => {
         return observed;
     }
     return { text: best, selector, length: best.length };
+}"""
+
+_LIVE_RESPONSES_JS = """(args) => {
+    const [selectors, initialCounts] = args;
+    const texts = [];
+    selectors.forEach(sel => {
+        const els = Array.from(document.querySelectorAll(sel));
+        const initial = initialCounts[sel] || 0;
+        els.slice(initial).forEach(el => {
+            const t = el.innerText || el.textContent || '';
+            if (t) texts.push(t);
+        });
+    });
+    return texts;
 }"""
 
 _PAGE_ELEMENTS_JS = """() => {
@@ -573,14 +588,20 @@ class Gemx:
                     current_length,
                     len(best),
                 )
-                if (
-                    stable >= cfg.stable_ticks
-                    and expected_format in (OutputFormat.JSON, OutputFormat.XML)
-                    and is_canned_reply(best)
+                if stable >= cfg.stable_ticks and expected_format in (
+                    OutputFormat.JSON,
+                    OutputFormat.XML,
                 ):
-                    raise ResponseTimeoutError(
-                        f"Gemini returned a canned reply: {best[:200]!r}"
+                    live = await page.evaluate(
+                        _LIVE_RESPONSES_JS, [list(RESPONSE_SELECTORS), initial_counts]
                     )
+                    canned = next(
+                        (t for t in [best, *live] if is_canned_reply(t)), None
+                    )
+                    if canned is not None:
+                        raise ResponseTimeoutError(
+                            f"Gemini returned a canned reply: {canned[:200]!r}"
+                        )
                 if stable >= cfg.stable_ticks and len(best) > cfg.min_response_chars:
                     if expected_format in (OutputFormat.JSON, OutputFormat.XML):
                         try:
