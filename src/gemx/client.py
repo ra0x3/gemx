@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from playwright.async_api import Page, async_playwright
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from .errors import InputError, ProfileBusyError, ResponseTimeoutError
 from .formats import OutputFormat, format_instruction, parse_output
@@ -352,7 +353,7 @@ class Gemx:
                 for attempt in range(1, attempts + 1):
                     try:
                         return await self._ask_raw_once(prompt, expected_format)
-                    except ResponseTimeoutError:
+                    except (ResponseTimeoutError, PlaywrightTimeoutError):
                         if attempt >= attempts:
                             raise
                         logger.warning(
@@ -436,7 +437,10 @@ class Gemx:
         logger.debug("navigating to %s", GEMINI_URL)
         await page.goto(GEMINI_URL, wait_until="load", timeout=cfg.nav_timeout_ms)
         await page.wait_for_load_state("domcontentloaded")
-        await page.wait_for_load_state("networkidle", timeout=30_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=30_000)
+        except PlaywrightTimeoutError:
+            logger.debug("network never went idle; continuing")
         await page.wait_for_timeout(5_000)
 
         await page.wait_for_timeout(cfg.post_load_settle_ms)
