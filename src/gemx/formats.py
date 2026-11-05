@@ -40,13 +40,13 @@ def format_instruction(fmt: OutputFormat) -> str:
     """Return the prompt instruction that asks Gemini for ``fmt`` output."""
     if fmt is OutputFormat.JSON:
         return (
-            "Respond with a single valid JSON object only. Do not include prose, "
-            "markdown fences, or commentary outside the JSON."
+            "Respond with exactly one ```json fenced code block holding a single "
+            "valid JSON object, and nothing outside the block."
         )
     if fmt is OutputFormat.XML:
         return (
-            "Respond with a single well-formed XML document only. Do not include "
-            "prose, markdown fences, or commentary outside the XML."
+            "Respond with exactly one ```xml fenced code block holding a single "
+            "well-formed XML document, and nothing outside the block."
         )
     return (
         "Respond with plain text only. Do not include markdown fences, JSON, or "
@@ -140,8 +140,17 @@ def parse_output(text: str, fmt: OutputFormat) -> Any:
             end = repaired.rfind("}") + 1
             candidate = repaired[start:end] if start != -1 and end != 0 else repaired
         try:
-            return json.loads(candidate)
+            return json.loads(candidate, strict=False)
         except json.JSONDecodeError as exc:
+            restarts = list(
+                re.finditer(r"```json[ \t]*\r?\n", text, flags=re.IGNORECASE)
+            )
+            if restarts:
+                candidate = text[restarts[-1].end() :].strip().removesuffix("```").rstrip()
+                try:
+                    return json.loads(_clean_json_text(candidate), strict=False)
+                except json.JSONDecodeError:
+                    pass
             raise ValueError(f"Could not parse JSON from response: {exc}") from exc
 
     start = cleaned.find("<")

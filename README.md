@@ -4,13 +4,12 @@
 `gemini.google.com` as if it were an API, using Playwright to enter a prompt,
 submit it, and capture the structured reply.
 
-It exists because the obvious approaches don't work: Gemini's editor is
-[Quill](https://quilljs.com/), which keeps its own document model and ignores
-DOM surgery, Playwright `fill()`, and synthetic input events — those leave the
-model empty and the turn errors with *"I encountered an error."* Gemx injects
-text via `execCommand('insertText')` (the same trusted input pipeline a manual
-paste uses), reads the reply from `message-content .markdown`, and retains the
-*peak* streamed text because Gemini re-mounts the response node mid-stream.
+Gemx enters prompts using the input routine verified by the browser-console
+recovery script: it replaces the editor contents with a paragraph and dispatches
+a bubbling `input` event before clicking Send. It reads replies from
+`message-content .markdown` and retains the *peak* streamed text because Gemini
+can re-mount the response node mid-stream. Responses must settle for six seconds
+by default; JSON and XML must also parse before Gemx returns them.
 
 ## Install
 

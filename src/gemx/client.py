@@ -3,11 +3,9 @@
 This is a formalized version of a hack that drives ``gemini.google.com/app`` as
 if it were an API. The non-obvious parts (and why this exists):
 
-* **Input** must go through ``document.execCommand('insertText')``. Gemini's
-  editor is Quill, which keeps its own document model and ignores DOM surgery,
-  Playwright ``fill()``, and synthetic ``InputEvent``s — those leave the model
-  empty and the turn errors with "I encountered an error". ``execCommand`` fires
-  the trusted ``beforeinput``/``input`` pair Quill honors, exactly like a paste.
+* **Input** follows the browser-console recovery script: replace the editor's
+  contents with a paragraph and dispatch a bubbling ``input`` event before
+  clicking Send.
 * **The response** lives in ``message-content .markdown`` (not a bare
   ``.markdown``), and Gemini re-mounts / empties that node after streaming, so we
   retain the *peak* text seen rather than reading the DOM once at the end.
@@ -109,13 +107,13 @@ _INSERT_TEXT_JS = """(text) => {
     const editor = document.querySelector('.ql-editor[contenteditable="true"]');
     if (!editor) return false;
     editor.focus();
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    const range = document.createRange();
-    range.selectNodeContents(editor);
-    range.collapse(false);
-    sel.addRange(range);
-    return document.execCommand('insertText', false, text);
+    editor.classList.remove('ql-blank');
+    editor.textContent = '';
+    const p = document.createElement('p');
+    p.textContent = text;
+    editor.appendChild(p);
+    editor.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
 }"""
 
 _INSTALL_RESPONSE_OBSERVER_JS = """(selectors) => {
@@ -297,9 +295,8 @@ class GemxConfig:  # pylint: disable=too-many-instance-attributes
     scroll_input_into_view: bool = True
     # The peak response must exceed this length and stay non-growing (or be
     # emptied) for this many poll ticks before it is accepted as complete.
-    # Matches the original bot/gemini.py driver (stable_count >= 2).
     min_response_chars: int = 50
-    stable_ticks: int = 2
+    stable_ticks: int = 3
     # How often (seconds) to emit page diagnostics while waiting for the response
     # node to appear.
     diagnostics_interval_s: int = 10
